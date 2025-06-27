@@ -17,6 +17,8 @@ def init_database(user: str, password: str, host: str, port: str, database: str)
     db_uri = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
     return SQLDatabase.from_uri(db_uri)
 
+
+
 # Modified to potentially return visualization instructions
 def get_sql_chain(db):
     template = """
@@ -139,7 +141,7 @@ def get_response(user_query: str, db: SQLDatabase, chat_history: list):
     
     template = """
     You are a data analyst at a company. You are interacting with a user who is asking you questions about the company's database.
-    Based on the table schema below, question, sql query, and sql response, write a natural language response.
+    Based on the table schema, question, sql query, and sql response, write a natural language response.
     When the user asks for data that would be better visualized (like comparisons, distributions, or trends), 
     include a visualization instruction like this: [VISUALIZATION:chart_type] where chart_type can be bar, line, or pie.
     
@@ -226,7 +228,9 @@ if user_query is not None and user_query.strip() != "":
         else:
             # Get the text response
             response = get_response(user_query, st.session_state.db, st.session_state.chat_history)
-            
+            st.markdown(response)
+
+
             # Check if response contains visualization instruction
             vis_match = re.search(r'\[VISUALIZATION:(\w+)\]', response)
             if vis_match:

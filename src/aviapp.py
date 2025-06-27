@@ -7,14 +7,20 @@ from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
-
-
-
+import os
 
 
 def init_database(user: str, password: str, host: str, port: str, database: str) -> SQLDatabase:
-    db_uri = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
-    return SQLDatabase.from_uri(db_uri)
+    try:
+        db_uri = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
+        return SQLDatabase.from_uri(db_uri)
+    except Exception as e:
+        st.error(f"Database connection failed: {str(e)}")
+        return None
+
+#def init_database(user: str, password: str, host: str, port: str, database: str) -> SQLDatabase:
+#    db_uri = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
+#    return SQLDatabase.from_uri(db_uri)
 
 # Creating template for chat prompt. It's a few-shot learning prompt template
 
@@ -99,7 +105,10 @@ if "chat_history" not in st.session_state:
     ]
 
 load_dotenv()
-
+# Add verification for required variables
+if not os.getenv("GROQ_API_KEY"):
+    st.error("GROQ_API_KEY not found in environment variables")
+    st.stop()
 st.set_page_config(page_title="chat with MySQL", page_icon=":speech_balloon:")
 
 st.title("Chat with MySQL")
@@ -130,6 +139,8 @@ with st.sidebar:
                 st.error(f"Failed to connect: {e}")
 
 # only show chat if DB is connected
+user_query = st.chat_input("Type a message...")
+
 for message in st.session_state.chat_history:
     if isinstance(message, AIMessage):
         with st.chat_message("AI"):
@@ -138,17 +149,21 @@ for message in st.session_state.chat_history:
         with st.chat_message("Human"):
             st.markdown(message.content)
 
-user_query = st.chat_input("Type a message...")
 if user_query is not None and user_query.strip() != "":
-    st.session_state.chat_history.append(HumanMessage(content=user_query))
-    
-    with st.chat_message("Human"):
-        st.markdown(user_query)
+    if "db" not in st.session_state:
+        st.error("Please connect to the database first!")
+    else:
+        st.session_state.chat_history.append(HumanMessage(content=user_query))
         
-    with st.chat_message("AI"):
-        response = get_response(user_query, st.session_state.db, st.session_state.chat_history)
-        st.markdown(response)
-        
-    st.session_state.chat_history.append(AIMessage(content=response))
-
+        with st.chat_message("Human"):
+            st.markdown(user_query)
+            
+        try:
+            response = get_response(user_query, st.session_state.db, st.session_state.chat_history)
+            st.markdown(response)
+            st.session_state.chat_history.append(AIMessage(content=response))
+        except Exception as e:
+            error_msg = f"Error processing your request: {str(e)}"
+            st.error(error_msg)
+            st.session_state.chat_history.append(AIMessage(content=error_msg))
 
