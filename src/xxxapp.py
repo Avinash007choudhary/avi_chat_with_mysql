@@ -69,7 +69,7 @@ def get_response(user_query: str, db: SQLDatabase, chat_history: list):
   
 
   # llm = ChatOpenAI(model="gpt-4-0125-preview")
-  llm = ChatGroq(model="mixtral-8x7b-32768", temperature=0)
+  llm = ChatGroq(model="llama3-70b-8192", temperature=0)
   
   chain = (
     RunnablePassthrough.assign(query=sql_chain).assign(

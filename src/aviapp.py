@@ -8,6 +8,7 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
 import os
+import matplotlib.pyplot as plt
 
 
 def init_database(user: str, password: str, host: str, port: str, database: str) -> SQLDatabase:
