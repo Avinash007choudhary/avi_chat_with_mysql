@@ -11,6 +11,11 @@ import plotly.express as px
 import pandas as pd
 import json
 import re
+import matplotlib.pyplot as plt
+from decimal import Decimal
+import ast
+
+
 
 # Initialize database (unchanged)
 def init_database(user: str, password: str, host: str, port: str, database: str) -> SQLDatabase:
@@ -29,9 +34,11 @@ def get_sql_chain(db):
     
     Conversation History: {chat_history}
     
-    Write only the SQL query and nothing else. Do not wrap the SQL query in any other text, not even backticks.
+    Write only the SQL query and show visualization if asked. Do not wrap the SQL query in any other text, not even backticks.
     
     For example:
+    Question:show me count of customers who did transaction to Mexico in the year 2024?
+    SQL Query: select count(our_customer_id) from comp_financial_tran_repos_dly where counterparty_customer_country='Mexico' and year(transaction_date)='2024';
     Question: which 3 artists have the most tracks?
     SQL Query: SELECT ArtistId, COUNT(*) as track_count FROM Track GROUP BY ArtistId ORDER BY track_count DESC LIMIT 3;
     Question: Name 10 artists
@@ -57,71 +64,106 @@ def get_sql_chain(db):
     )
 
 # New function to create visualizations
-def create_visualization(data, chart_type="auto"):
-    try:
-        # Convert to DataFrame if not already
-        df = pd.DataFrame(data)
+def parse_sql_result(data_str):
+    """Parse SQL result string like "[('Houston', Decimal('25188006.27')), ...]"""
+    pattern = r"\('([^']+)', Decimal\('([\d.]+)'\)\)"
+    matches = re.findall(pattern, data_str)
+    return [(country, float(amount)) for country, amount in matches]
+
+def parse_sql_data(data):
+    """Parse various SQL result formats into DataFrame"""
+    if isinstance(data, pd.DataFrame):
+        return data
+    
+    if isinstance(data, str):
+        try:
+            # Case 1: [('name', Decimal('123.45')] format
+            if data.startswith("[(") and "Decimal" in data:
+                pattern = r"\('([^']+)', Decimal\('([\d.]+)'\)\)"
+                matches = re.findall(pattern, data)
+                return pd.DataFrame(matches, columns=['category', 'value'])
+            
+            # Case 2: JSON format
+            if data.startswith("{") or data.startswith("["):
+                return pd.DataFrame(json.loads(data))
+            
+            # Case 3: Raw values
+            return pd.DataFrame([float(x) for x in data.split('\n') if x.strip()])
         
-        # Handle empty data
+        except:
+            return pd.DataFrame()
+
+    # Handle list/dict inputs
+    return pd.DataFrame(data)
+
+
+def recommend_chart_type(df):
+    """Auto-select chart type based on data characteristics"""
+    if len(df.columns) == 1:
+        return "histogram"
+    
+    numeric_cols = df.select_dtypes(include=['number']).columns
+    
+    if len(df) > 100:
+        return "scatter" if len(numeric_cols) >= 2 else "line"
+    
+    if len(df.columns) == 2:
+        if pd.api.types.is_datetime64_any_dtype(df.iloc[:, 0]):
+            return "line"
+        return "bar"
+    
+    if len(numeric_cols) >= 2:
+        return "scatter"
+    
+    return "bar"
+
+def generate_chart(df, chart_type, title):
+    """Generate different chart types dynamically"""
+    numeric_cols = df.select_dtypes(include=['number']).columns
+    cat_cols = df.select_dtypes(exclude=['number']).columns
+    
+    # Default column mappings
+    x_col = cat_cols[0] if len(cat_cols) > 0 else df.columns[0]
+    y_col = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[-1]
+    
+    if chart_type == "bar":
+        fig = px.bar(df, x=x_col, y=y_col, title=title)
+    elif chart_type == "line":
+        fig = px.line(df, x=x_col, y=y_col, title=title)
+    elif chart_type == "pie":
+        fig = px.pie(df, names=x_col, values=y_col, title=title)
+    elif chart_type == "scatter":
+        fig = px.scatter(df, x=x_col, y=y_col, title=title)
+    elif chart_type == "histogram":
+        fig = px.histogram(df, x=x_col, title=title)
+    else:
+        fig = px.bar(df, x=x_col, y=y_col, title=title)  # Default fallback
+    
+    # Auto-formatting
+    if y_col in numeric_cols:
+        fig.update_layout(yaxis_tickprefix='$', yaxis_tickformat=',.2f')
+    fig.update_layout(hovermode='x unified')
+    return fig
+
+
+def create_dynamic_visualization(data, chart_type="auto", title="Data Visualization"):
+    try:
+        # Parse incoming data
+        df = parse_sql_data(data)
         if df.empty:
             return None
-            
-        # Auto-detect chart type
+
+        # Auto-detect best chart type if not specified
         if chart_type == "auto":
-            if len(df.columns) == 1:
-                # Single column - histogram
-                chart_type = "histogram"
-            elif len(df.columns) == 2:
-                if pd.api.types.is_numeric_dtype(df.iloc[:, 1]):
-                    if len(df) > 10:  # Many data points - line may be better
-                        chart_type = "line"
-                    elif pd.api.types.is_datetime64_any_dtype(df.iloc[:, 0]):
-                        chart_type = "line"
-                    else:
-                        chart_type = "bar"
-                else:
-                    chart_type = "pie"
-            else:
-                # For 3+ columns, use first two numeric columns
-                numeric_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
-                if len(numeric_cols) >= 2:
-                    chart_type = "scatter"
-                else:
-                    chart_type = "bar"
-        
-        # Create appropriate visualization
-        if chart_type == "bar":
-            fig = px.bar(df, 
-                        x=df.columns[0], 
-                        y=df.columns[1],
-                        title=f"Bar Chart: {df.columns[1]} by {df.columns[0]}")
-                        
-        elif chart_type == "line":
-            fig = px.line(df,
-                         x=df.columns[0],
-                         y=df.columns[1],
-                         title=f"Trend of {df.columns[1]} over {df.columns[0]}")
-                         
-        elif chart_type == "pie":
-            fig = px.pie(df,
-                         names=df.columns[0],
-                         values=df.columns[1],
-                         title=f"Distribution of {df.columns[1]} by {df.columns[0]}")
-                         
-        elif chart_type == "histogram":
-            fig = px.histogram(df,
-                              x=df.columns[0],
-                              title=f"Distribution of {df.columns[0]}")
-                              
-        elif chart_type == "scatter":
-            numeric_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
-            fig = px.scatter(df,
-                           x=numeric_cols[0],
-                           y=numeric_cols[1],
-                           title=f"{numeric_cols[1]} vs {numeric_cols[0]}")
-                           
-        else:
-            return None
+            chart_type = recommend_chart_type(df)
+
+        # Generate visualization
+        fig = generate_chart(df, chart_type, title)
+        return fig
+
+    except Exception as e:
+        st.error(f"Visualization error: {str(e)}")
+        return None
             
         # Improve layout
         fig.update_layout(
@@ -139,18 +181,47 @@ def create_visualization(data, chart_type="auto"):
 def get_response(user_query: str, db: SQLDatabase, chat_history: list):
     sql_chain = get_sql_chain(db)
     
-    template = """
-    You are a data analyst at a company. You are interacting with a user who is asking you questions about the company's database.
-    Based on the table schema, question, sql query, and sql response, write a natural language response.
-    When the user asks for data that would be better visualized (like comparisons, distributions, or trends), 
-    include a visualization instruction like this: [VISUALIZATION:chart_type] where chart_type can be bar, line, or pie.
+    #template = """
+    #You are a data analyst at a company. You are interacting with a user who is asking you questions about the company's database.
+    #Based on the table schema, question, sql query, and sql response, write a natural language response.
+    #When the user asks for data that would be better visualized (like comparisons, distributions, or trends), 
+    #include a visualization instruction like this: [VISUALIZATION:chart_type] where chart_type can be bar, line, or pie.
     
+    #<SCHEMA>{schema}</SCHEMA>
+    #Conversation History: {chat_history}
+    #SQL Query: <SQL>{query}</SQL>
+    #User question: {question}
+    #SQL Response: {response}"""
+    
+    template = """
+    When responding to data queries, format your answer as:
+
+        <ANALYSIS>
+        [Your interpretation of the data]
+        </ANALYSIS>
+
+        <VISUALIZATION-TYPE>
+        [Recommended chart type: bar|line|pie|scatter|histogram|auto]
+        </VISUALIZATION-TYPE>
+
+        <DATA-FORMAT>
+        [x_column: column_name]
+        [y_column: column_name (if applicable)]
+        [title: Suggested chart title]
+        </DATA-FORMAT>
+
+        <SQL-DATA>
+        [Raw query results]
+        </SQL-DATA> 
+        
     <SCHEMA>{schema}</SCHEMA>
     Conversation History: {chat_history}
     SQL Query: <SQL>{query}</SQL>
     User question: {question}
-    SQL Response: {response}"""
-    
+    SQL Response: {response}
+    """
+
+
     prompt = ChatPromptTemplate.from_template(template)
     llm = ChatGroq(model="llama3-70b-8192", temperature=0)
     
@@ -168,6 +239,27 @@ def get_response(user_query: str, db: SQLDatabase, chat_history: list):
         "question": user_query,
         "chat_history": chat_history,
     })
+
+def handle_visualization(response):
+    """Process LLM response and generate visualization"""
+    # Extract components from LLM response
+    vis_type = extract_between_tags(response, "VISUALIZATION-TYPE") or "auto"
+    data = extract_between_tags(response, "SQL-DATA")
+    title = extract_between_tags(response, "title") or "Data Visualization"
+    
+    # Generate and display chart
+    fig = create_dynamic_visualization(data, chart_type=vis_type, title=title)
+    if fig:
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("Could not generate visualization from the data")
+
+def extract_between_tags(text, tag_name):
+    """Helper to extract content between XML-like tags"""
+    pattern = f"<{tag_name}>(.*?)</{tag_name}>"
+    match = re.search(pattern, text, re.DOTALL)
+    return match.group(1).strip() if match else None
+
 
 # Main app (modified to handle visualizations)
 if "chat_history" not in st.session_state:
@@ -205,7 +297,7 @@ for message in st.session_state.chat_history:
             # Check if the message contains a visualization instruction
             if hasattr(message, 'visualization_data'):
                 st.markdown(message.content)
-                fig = create_visualization(message.visualization_data)
+                fig = create_dynamic_visualization(message.visualization_data)
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
             else:
@@ -223,45 +315,68 @@ if user_query is not None and user_query.strip() != "":
         st.markdown(user_query)
         
     with st.chat_message("AI"):
-        if 'db' not in st.session_state:
+        if 'db' not in st.session_state or st.session_state.db is None:
             st.error("Please connect to the database first")
+            st.session_state.chat_history.append(AIMessage(content="Please connect to the database first."))
         else:
-            # Get the text response
-            response = get_response(user_query, st.session_state.db, st.session_state.chat_history)
-            st.markdown(response)
-
-
-            # Check if response contains visualization instruction
-            vis_match = re.search(r'\[VISUALIZATION:(\w+)\]', response)
-            if vis_match:
-                chart_type = vis_match.group(1)
-                response = response.replace(vis_match.group(0), "")
+            try:
+                # Get the initial response
+                response = get_response(user_query, st.session_state.db, st.session_state.chat_history)
                 
-                # Get the data for visualization by running the query again
-                try:
-                    sql_chain = get_sql_chain(st.session_state.db)
-                    query = sql_chain.invoke({
-                        "question": user_query,
-                        "chat_history": st.session_state.chat_history
-                    })
-                    data = st.session_state.db.run(query)
+                # Check if visualization is requested
+                if '[VISUALIZATION:' in response:
+                    try:
+                        # Extract visualization instruction safely
+                        vis_match = re.search(r'\[VISUALIZATION:(\w+)\]', response)
+                        if vis_match:
+                            chart_type = vis_match.group(1)  # Define chart_type here
+                            response_text = response.replace(vis_match.group(0), "")
+                            
+                            # Get the SQL query
+                            sql_chain = get_sql_chain(st.session_state.db)
+                            query = sql_chain.invoke({
+                                "question": user_query,
+                                "chat_history": st.session_state.chat_history
+                            })
+                            
+                            # Get the data
+                        try:
+                            data = st.session_state.db.run(query)
+    
+                            # Convert Decimal to float
+                            if isinstance(data, str):
+                                try:
+                                    data = json.loads(data, parse_float=lambda x: float(x))
+                                except:
+                                    # Handle case where data isn't JSON
+                                    pass
+
+                            fig = create_dynamic_visualization(data, chart_type, title="Data Visualization")
+                            if fig:
+                                st.plotly_chart(fig, use_container_width=True)
+                                
+                                # Update chat history
+                                st.session_state.chat_history.append(AIMessage(content=response_text))
+                            else:
+                                st.markdown(response)
+                                st.session_state.chat_history.append(AIMessage(content=response))
+                        except Exception as e:
+                            st.error(f"Error running query or creating visualization: {str(e)}")
+                            st.markdown(response)
+                            st.session_state.chat_history.append(AIMessage(content=f"{response}\n\nError: {str(e)}"))
                     
-                    # Convert SQL result to DataFrame
-                    if data:
-                        # Create a custom AIMessage that includes visualization data
-                        vis_message = AIMessage(content=response)
-                        vis_message.visualization_data = json.loads(data)
-                        st.session_state.chat_history.append(vis_message)
-                        
-                        # Display both text and visualization
+                    except Exception as e:
+                        error_msg = f"🚨 Failed to generate visualization: {str(e)}"
+                        st.error(error_msg)
                         st.markdown(response)
-                        fig = create_visualization(vis_message.visualization_data, chart_type)
-                        if fig:
-                            st.plotly_chart(fig, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Failed to generate visualization: {e}")
+                        st.session_state.chat_history.append(AIMessage(content=f"{response}\n\n{error_msg}"))
+                
+                else:
+                    # No visualization requested
                     st.markdown(response)
                     st.session_state.chat_history.append(AIMessage(content=response))
-            else:
-                st.markdown(response)
-                st.session_state.chat_history.append(AIMessage(content=response))
+            
+            except Exception as e:
+                error_msg = f"🚨 Error processing your request: {str(e)}"
+                st.error(error_msg)
+                st.session_state.chat_history.append(AIMessage(content=error_msg))
